@@ -15,7 +15,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var statusWatcher: StatusWatcher!
     private var sleepManager: SleepManager!
-    private var notificationManager: NotificationManager!
     private var popover: NSPopover!
     private var popoverModel: PopoverViewModel!
     private var animationTimer: Timer?
@@ -28,9 +27,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if #available(macOS 13.0, *) {
             try? SMAppService.mainApp.register()
         }
-
-        notificationManager = NotificationManager()
-        notificationManager.requestPermission()
 
         sleepManager = SleepManager()
 
@@ -87,19 +83,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .waiting:
             sleepManager.allowSleep()
             startAnimation(for: .waiting)
-            notificationManager.send(
-                title: "Claude Code",
-                body: "Needs your attention"
-            )
         case .idle:
             sleepManager.allowSleep()
             stopAnimation()
-            if status.previousState == .working {
-                notificationManager.send(
-                    title: "Claude Code",
-                    body: "Task finished"
-                )
-            }
         }
     }
 

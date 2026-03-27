@@ -18,9 +18,9 @@ TOOL_NAME="$TOOL_NAME"
 CWD="$CWD"
 
 case "$EVENT" in
-  SessionStart|PreToolUse|PostToolUse)  STATUS="working" ;;
+  PreToolUse|PostToolUse)                STATUS="working" ;;
   Notification|PermissionRequest)        STATUS="waiting" ;;
-  Stop)                                  STATUS="idle" ;;
+  SessionStart|Stop)                     STATUS="idle" ;;
   SessionEnd)
     # Session terminated — delete the status file immediately
     rm -f "/tmp/claude-status-${SESSION_ID}.json"

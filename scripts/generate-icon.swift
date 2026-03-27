@@ -92,7 +92,9 @@ func savePNG(_ image: NSImage, to path: String, pixelSize: Int) {
 }
 
 // Create iconset directory
-let iconsetPath = "/Users/bartoszbukowiec/projects/statusbar/Clawdebar.iconset"
+let scriptPath = CommandLine.arguments[0]
+let projectDir = URL(fileURLWithPath: scriptPath).deletingLastPathComponent().deletingLastPathComponent().path
+let iconsetPath = "\(projectDir)/Clawdebar.iconset"
 let fm = FileManager.default
 try? fm.removeItem(atPath: iconsetPath)
 try! fm.createDirectory(atPath: iconsetPath, withIntermediateDirectories: true)

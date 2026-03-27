@@ -2,7 +2,7 @@
 
 A lightweight macOS menu bar app that keeps you in the loop while Claude Code works.
 
-Stop watching your terminal. Walk away, watch YouTube, grab coffee — you'll get a notification when Claude needs you or finishes the task.
+Stop watching your terminal. Glance at the menu bar to see what Claude is doing across all sessions.
 
 ## Features
 
@@ -10,7 +10,6 @@ Stop watching your terminal. Walk away, watch YouTube, grab coffee — you'll ge
 - **Multi-session support** — tracks all running Claude Code sessions, shows count badge
 - **Click to see all sessions** — popover lists every session with status, directory, and terminal app
 - **One-click focus** — click a session to jump to its terminal (VSCode, iTerm, Warp, Terminal, etc.)
-- **macOS notifications** — get pinged when Claude asks a question or completes a task
 - **Sleep prevention** — your MacBook stays awake while any session is working
 - **Auto-start on login** — registers itself as a Login Item, survives reboots
 - **Auto-cleanup** — stale sessions are removed automatically
@@ -99,7 +98,6 @@ This removes everything:
     ├── StatusBarApp.swift      # Menu bar app, popover UI, Clawde icon
     ├── StatusWatcher.swift     # Multi-session file watcher
     ├── SleepManager.swift      # IOKit sleep prevention
-    ├── NotificationManager.swift  # macOS notifications
     └── Info.plist              # App config (LSUIElement)
 ```
 

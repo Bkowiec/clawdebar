@@ -34,7 +34,6 @@ struct ClaudeStatus {
     let event: String
     let timestamp: TimeInterval
     let sessionId: String
-    let previousState: ClaudeState
     let toolName: String
     let workingDirectory: String
     let app: String
@@ -164,7 +163,6 @@ class StatusWatcher {
             event: topSession?.event ?? "",
             timestamp: topSession?.timestamp ?? now,
             sessionId: topSession?.id ?? "",
-            previousState: previousAggregated,
             toolName: topSession?.toolName ?? "",
             workingDirectory: topSession?.workingDirectory ?? "",
             app: topSession?.app ?? ""
