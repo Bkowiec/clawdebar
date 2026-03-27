@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+.DS_Store
+.claude/
+Clawdebar.iconset/
+Clawdebar.icns
