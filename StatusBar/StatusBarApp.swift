@@ -24,7 +24,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
-        if #available(macOS 13.0, *) {
+        // Only register as Login Item when running from an .app bundle
+        if #available(macOS 13.0, *), Bundle.main.bundlePath.hasSuffix(".app") {
             try? SMAppService.mainApp.register()
         }
 
