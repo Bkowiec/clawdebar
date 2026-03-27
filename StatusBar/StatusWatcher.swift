@@ -27,6 +27,7 @@ struct SessionInfo: Identifiable {
     let toolName: String
     let workingDirectory: String
     let app: String
+    let tty: String
 }
 
 struct ClaudeStatus {
@@ -47,6 +48,7 @@ private struct StatusFileContent: Codable {
     let tool_name: String?
     let cwd: String?
     let app: String?
+    let tty: String?
 }
 
 class StatusWatcher {
@@ -58,8 +60,7 @@ class StatusWatcher {
     private var pollTimer: Timer?
     private(set) var aggregatedState: ClaudeState = .idle
     private(set) var sessions: [SessionInfo] = []
-    private let staleIdleTimeout: TimeInterval = 300     // 5 min for idle sessions
-    private let staleActiveTimeout: TimeInterval = 1800  // 30 min for working/waiting
+    private let orphanedTimeout: TimeInterval = 5400
 
     init(onChange: @escaping (ClaudeStatus) -> Void) {
         self.onChange = onChange
@@ -122,8 +123,7 @@ class StatusWatcher {
             }
 
             // Skip stale sessions — working/waiting get a longer grace period
-            let timeout = (state == .idle) ? staleIdleTimeout : staleActiveTimeout
-            if now - content.timestamp > timeout {
+            if now - content.timestamp > orphanedTimeout {
                 try? fm.removeItem(atPath: path)
                 continue
             }
@@ -135,7 +135,8 @@ class StatusWatcher {
                 timestamp: content.timestamp,
                 toolName: content.tool_name ?? "",
                 workingDirectory: content.cwd ?? "",
-                app: content.app ?? ""
+                app: content.app ?? "",
+                tty: content.tty ?? ""
             )
             newSessions.append(session)
         }

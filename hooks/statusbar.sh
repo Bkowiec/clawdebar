@@ -71,11 +71,21 @@ detect_app() {
 
 APP=$(detect_app)
 
+# Detect TTY for terminal window matching
+SESSION_TTY=""
+pid=$$
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -z "$pid" ] || [ "$pid" = "1" ] && break
+    t=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+    if [ -n "$t" ] && [ "$t" != "??" ]; then
+        SESSION_TTY="/dev/$t"
+        break
+    fi
+done
+
 # Write per-session status file
 STATUS_FILE="/tmp/claude-status-${SESSION_ID}.json"
 cat > "$STATUS_FILE" <<EOF
-{"status":"$STATUS","event":"$EVENT","timestamp":$TIMESTAMP,"session_id":"$SESSION_ID","tool_name":"$TOOL_NAME","cwd":"$CWD","app":"$APP"}
+{"status":"$STATUS","event":"$EVENT","timestamp":$TIMESTAMP,"session_id":"$SESSION_ID","tool_name":"$TOOL_NAME","cwd":"$CWD","app":"$APP","tty":"$SESSION_TTY"}
 EOF
-
-# Clean up stale session files (older than 5 minutes)
-find /tmp -name "claude-status-*.json" -mmin +5 -delete 2>/dev/null

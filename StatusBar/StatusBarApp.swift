@@ -35,7 +35,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 340, height: 400)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(
-            rootView: PopoverView(model: popoverModel)
+            rootView: PopoverView(model: popoverModel, onDismiss: { [weak self] in
+                self?.closePopover()
+            })
         )
 
         statusItem.button?.target = self
@@ -51,14 +53,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func togglePopover() {
-        if popover.isShown {
+        if popover.isShown, popover.contentViewController?.view.window?.isOnActiveSpace == true {
             closePopover()
-        } else if let button = statusItem.button {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            if popover.isShown { closePopover() }
 
-            clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-                self?.closePopover()
+            if let button = statusItem.button {
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                popover.contentViewController?.view.window?.makeKey()
+                NSApp.activate(ignoringOtherApps: true)
+
+                clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                    guard let self = self else { return }
+                    if let popoverWindow = self.popover.contentViewController?.view.window,
+                       let eventWindow = event.window,
+                       popoverWindow == eventWindow { return }
+                    self.closePopover()
+                }
             }
         }
     }
@@ -88,8 +99,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             stopAnimation()
         }
     }
-
-    // MARK: - Menu Bar Button
 
     private func updateMenuBarButton(for state: ClaudeState, sessionCount: Int) {
         guard let button = statusItem.button else { return }
@@ -149,8 +158,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return image
     }
 
-    // MARK: - Animation
-
     private func startAnimation(for state: ClaudeState) {
         stopAnimation()
         animationFrame = 0
@@ -178,8 +185,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-// MARK: - Popover View Model
-
 class PopoverViewModel: ObservableObject {
     @Published var aggregatedState: ClaudeState = .idle
     @Published var sessions: [SessionInfo] = []
@@ -190,14 +195,12 @@ class PopoverViewModel: ObservableObject {
     }
 }
 
-// MARK: - Popover View
-
 struct PopoverView: View {
     @ObservedObject var model: PopoverViewModel
+    var onDismiss: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header
             HStack {
                 Image(systemName: stateIcon)
                     .font(.system(size: 20, weight: .semibold))
@@ -218,7 +221,6 @@ struct PopoverView: View {
 
             Divider()
 
-            // Sessions list
             if model.sessions.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "moon.zzz.fill")
@@ -234,7 +236,7 @@ struct PopoverView: View {
                 ScrollView {
                     VStack(spacing: 2) {
                         ForEach(model.sessions) { session in
-                            SessionRow(session: session)
+                            SessionRow(session: session, onActivate: onDismiss)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -245,7 +247,6 @@ struct PopoverView: View {
 
             Divider()
 
-            // Quit
             HStack {
                 Spacer()
                 Button(action: { NSApplication.shared.terminate(nil) }) {
@@ -295,15 +296,13 @@ struct PopoverView: View {
     }
 }
 
-// MARK: - Session Row
-
 struct SessionRow: View {
     let session: SessionInfo
+    var onActivate: (() -> Void)?
 
     var body: some View {
         Button(action: focusSession) {
             HStack(spacing: 10) {
-                // State indicator
                 Circle()
                     .fill(sessionColor)
                     .frame(width: 8, height: 8)
@@ -346,7 +345,7 @@ struct SessionRow: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(Color.primary.opacity(0.03))
+            .background(Color.gray.opacity(0.1))
             .cornerRadius(8)
         }
         .buttonStyle(.plain)
@@ -370,7 +369,6 @@ struct SessionRow: View {
 
     private func shortenPath(_ path: String) -> String {
         if path.isEmpty { return "Unknown" }
-        // Show last 2 path components
         let components = path.split(separator: "/")
         if components.count >= 2 {
             return "…/\(components.suffix(2).joined(separator: "/"))"
@@ -379,59 +377,96 @@ struct SessionRow: View {
     }
 
     private func focusSession() {
+        onActivate?()
+
         let app = session.app
         let dir = session.workingDirectory
+        let sessionId = session.id
 
-        switch app {
-        case "VSCode":
-            if !dir.isEmpty {
-                let task = Process()
-                task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                task.arguments = ["code", "--goto", dir]
-                try? task.run()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            var found = false
+
+            switch app {
+            case "VSCode":
+                found = self.activateApp(bundleId: "com.microsoft.VSCode")
+                if found && !dir.isEmpty {
+                    let task = Process()
+                    task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                    task.arguments = ["code", "--goto", dir]
+                    try? task.run()
+                }
+
+            case "iTerm":
+                found = self.activateApp(bundleId: "com.googlecode.iterm2")
+
+            case "Warp":
+                found = self.activateApp(bundleId: "dev.warp.Warp-Stable")
+
+            case "kitty":
+                found = self.activateApp(name: "kitty")
+
+            case "Alacritty":
+                found = self.activateApp(name: "Alacritty")
+
+            case "WezTerm":
+                found = self.activateApp(name: "WezTerm")
+
+            case "Terminal":
+                found = self.activateApp(bundleId: "com.apple.Terminal")
+                if found, let tty = self.sanitizedTty(session.tty) {
+                    self.runOsascript("""
+                    tell application "Terminal"
+                        repeat with w in windows
+                            repeat with t in tabs of w
+                                if tty of t is "\(tty)" then
+                                    set selected of t to true
+                                    set miniaturized of w to false
+                                    set index of w to 1
+                                end if
+                            end repeat
+                        end repeat
+                    end tell
+                    """)
+                }
+
+            default:
+                break
             }
-            activateApp(bundleId: "com.microsoft.VSCode")
 
-        case "iTerm":
-            activateApp(bundleId: "com.googlecode.iterm2")
-
-        case "Warp":
-            activateApp(bundleId: "dev.warp.Warp-Stable")
-
-        case "kitty":
-            activateApp(name: "kitty")
-
-        case "Alacritty":
-            activateApp(name: "Alacritty")
-
-        case "WezTerm":
-            activateApp(name: "WezTerm")
-
-        default:
-            let targetDir = dir.isEmpty ? NSHomeDirectory() : dir
-            let escaped = targetDir.replacingOccurrences(of: "\\", with: "\\\\")
-                                   .replacingOccurrences(of: "\"", with: "\\\"")
-            let script = """
-            tell application "Terminal"
-                activate
-                do script "cd \"\(escaped)\""
-            end tell
-            """
-            var error: NSDictionary?
-            NSAppleScript(source: script)?.executeAndReturnError(&error)
+            if !found {
+                try? FileManager.default.removeItem(atPath: "/tmp/claude-status-\(sessionId).json")
+            }
         }
     }
 
-    private func activateApp(bundleId: String) {
+    private func runOsascript(_ script: String) {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        try? task.run()
+    }
+
+    private func sanitizedTty(_ tty: String) -> String? {
+        let pattern = #"^/dev/ttys\d+$"#
+        guard tty.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return tty
+    }
+
+    @discardableResult
+    private func activateApp(bundleId: String) -> Bool {
         if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
-            app.activate()
+            app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            return true
         }
+        return false
     }
 
-    private func activateApp(name: String) {
+    @discardableResult
+    private func activateApp(name: String) -> Bool {
         if let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == name }) {
-            app.activate()
+            app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            return true
         }
+        return false
     }
 }
-

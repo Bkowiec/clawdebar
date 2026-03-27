@@ -25,8 +25,8 @@ Each Claude Code session writes its own status file via [hooks](https://docs.ant
 | Priority | Hook Events | Icon |
 |---|---|---|
 | Waiting (highest) | `Notification`, `PermissionRequest` | Clawde yellow, blinking |
-| Working | `SessionStart`, `PreToolUse`, `PostToolUse` | Clawde orange, pulsing |
-| Idle | `Stop` | Clawde gray (template) |
+| Working | `PreToolUse`, `PostToolUse` | Clawde orange, pulsing |
+| Idle | `SessionStart`, `Stop` | Clawde gray (template) |
 
 When multiple sessions are active, a badge shows the count (e.g. "3").
 
@@ -40,8 +40,8 @@ When multiple sessions are active, a badge shows the count (e.g. "3").
 ## Install
 
 ```bash
-git clone https://github.com/user/claude-code-statusbar.git
-cd claude-code-statusbar
+git clone <repo-url>
+cd clawdebar
 ./install.sh
 ```
 
@@ -66,12 +66,14 @@ The hook script auto-detects which app Claude Code is running in:
 | Terminal | Detection | Focus action |
 |---|---|---|
 | VSCode | Process tree + `TERM_PROGRAM` | `code --goto` + activate |
-| Terminal.app | Process tree | AppleScript activate |
+| Terminal.app | Process tree | AppleScript: finds exact tab by TTY, unminimizes window |
 | iTerm2 | Process tree | Activate by bundle ID |
 | Warp | Process tree | Activate by bundle ID |
 | kitty | Process tree | Activate by name |
 | Alacritty | Process tree | Activate by name |
 | WezTerm | Process tree | Activate by name |
+
+> **Note:** For Terminal.app, the first time you click a session, macOS will ask for Automation permission. This is a one-time prompt — after granting it, Clawdebar can find and unminimize the exact Terminal tab. If denied, it still brings Terminal to front but won't select the specific tab.
 
 ## Uninstall
 
