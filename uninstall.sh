@@ -65,6 +65,12 @@ fi
 # 5. Clean up status files
 rm -f $STATUS_PATTERN
 
+# 6. Remove stats directory
+if [ -d "$HOME/.clawdebar" ]; then
+    echo "Removing stats directory ~/.clawdebar/..."
+    rm -rf "$HOME/.clawdebar"
+fi
+
 echo ""
 echo "=== Uninstall complete ==="
 echo "Clawdebar has been fully removed."

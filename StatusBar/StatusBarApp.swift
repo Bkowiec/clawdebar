@@ -20,6 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var animationTimer: Timer?
     private var animationFrame: Int = 0
     private var clickMonitor: Any?
+    private let hookInstaller = HookInstaller()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -29,20 +30,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? SMAppService.mainApp.register()
         }
 
+        // Install/update hook script and register in Claude Code settings
+        hookInstaller.installIfNeeded()
+
         sleepManager = SleepManager()
 
         popoverModel = PopoverViewModel()
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 340, height: 400)
         popover.behavior = .transient
         popover.contentViewController = NSHostingController(
             rootView: PopoverView(model: popoverModel, onDismiss: { [weak self] in
                 self?.closePopover()
+            }, onRefresh: { [weak self] in
+                self?.refreshSessions()
             })
         )
 
         statusItem.button?.target = self
-        statusItem.button?.action = #selector(togglePopover)
+        statusItem.button?.action = #selector(statusItemClicked)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         statusWatcher = StatusWatcher { [weak self] status in
             DispatchQueue.main.async {
@@ -51,6 +57,66 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         updateMenuBarButton(for: .idle, sessionCount: 0)
+
+        // Flush stats before system sleep so nothing is lost
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.statusWatcher.statsStore.save()
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        statusWatcher.statsStore.save()
+    }
+
+    func refreshSessions() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.statusWatcher.discoverRunningSessions()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.popoverModel.update(from: self.statusWatcher)
+            }
+        }
+    }
+
+    @objc private func statusItemClicked() {
+        guard let event = NSApp.currentEvent else { return }
+        if event.type == .rightMouseUp {
+            let menu = NSMenu()
+            menu.addItem(NSMenuItem(title: "Uninstall Clawdebar...", action: #selector(uninstallApp), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+            statusItem.menu = menu
+            statusItem.button?.performClick(nil)
+            statusItem.menu = nil  // reset so left-click works normally next time
+        } else {
+            togglePopover()
+        }
+    }
+
+    @objc private func uninstallApp() {
+        let alert = NSAlert()
+        alert.messageText = "Uninstall Clawdebar?"
+        alert.informativeText = "This will remove the hook script, Claude Code hook settings, statistics, and the Login Item. The app bundle must be deleted manually."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Uninstall")
+        alert.addButton(withTitle: "Cancel")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        hookInstaller.uninstall()
+        try? FileManager.default.removeItem(atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".clawdebar").path)
+        if #available(macOS 13.0, *) {
+            try? SMAppService.mainApp.unregister()
+        }
+
+        let done = NSAlert()
+        done.messageText = "Clawdebar uninstalled"
+        done.informativeText = "Hooks and settings have been removed. You can now delete Clawdebar.app from your Applications folder."
+        done.runModal()
+
+        NSApplication.shared.terminate(nil)
     }
 
     @objc private func togglePopover() {
@@ -60,6 +126,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if popover.isShown { closePopover() }
 
             if let button = statusItem.button {
+                popoverModel.showStats = false
                 popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
                 popover.contentViewController?.view.window?.makeKey()
                 NSApp.activate(ignoringOtherApps: true)
@@ -189,16 +256,58 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 class PopoverViewModel: ObservableObject {
     @Published var aggregatedState: ClaudeState = .idle
     @Published var sessions: [SessionInfo] = []
+    @Published var isScanning: Bool = false
+    @Published var showStats: Bool = false
+    @Published var todayStats: DailyStats = DailyStats(date: "")
+    @Published var recentDays: [DailyStats] = []
+    @Published var topTools: [(name: String, count: Int)] = []
+    @Published var sessionElapsedTimes: [String: TimeInterval] = [:]
+
+    private weak var watcher: StatusWatcher?
+    private var refreshTimer: Timer?
 
     func update(from watcher: StatusWatcher) {
+        self.watcher = watcher
         aggregatedState = watcher.aggregatedState
         sessions = watcher.sessions
+        isScanning = false
+        refreshStats(from: watcher)
+        ensureTimer()
+    }
+
+    private func refreshStats(from watcher: StatusWatcher) {
+        let store = watcher.statsStore
+        todayStats = store.todayStats()
+        recentDays = store.recentStats(days: 7)
+        topTools = store.topTools(days: 7)
+
+        var elapsed: [String: TimeInterval] = [:]
+        for session in sessions {
+            if let t = store.elapsedTime(for: session.id) {
+                elapsed[session.id] = t
+            }
+        }
+        sessionElapsedTimes = elapsed
+    }
+
+    private func ensureTimer() {
+        if sessions.isEmpty {
+            refreshTimer?.invalidate()
+            refreshTimer = nil
+            return
+        }
+        guard refreshTimer == nil else { return }
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            guard let self = self, let watcher = self.watcher else { return }
+            self.refreshStats(from: watcher)
+        }
     }
 }
 
 struct PopoverView: View {
     @ObservedObject var model: PopoverViewModel
     var onDismiss: (() -> Void)?
+    var onRefresh: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -222,7 +331,13 @@ struct PopoverView: View {
 
             Divider()
 
-            if model.sessions.isEmpty {
+            if model.showStats {
+                StatsView(
+                    todayStats: model.todayStats,
+                    recentDays: model.recentDays,
+                    topTools: model.topTools
+                )
+            } else if model.sessions.isEmpty {
                 HStack(spacing: 6) {
                     Image(systemName: "moon.zzz.fill")
                         .font(.system(size: 14))
@@ -237,29 +352,51 @@ struct PopoverView: View {
                 ScrollView {
                     VStack(spacing: 2) {
                         ForEach(model.sessions) { session in
-                            SessionRow(session: session, onActivate: onDismiss)
+                            SessionRow(
+                                session: session,
+                                elapsedTime: model.sessionElapsedTimes[session.id],
+                                onActivate: onDismiss
+                            )
                         }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                 }
-                .frame(maxHeight: 260)
+                .frame(maxHeight: 300)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()
 
             HStack {
-                Spacer()
-                Button(action: { NSApplication.shared.terminate(nil) }) {
+                Button(action: {
+                    model.isScanning = true
+                    onRefresh?()
+                }) {
                     HStack(spacing: 4) {
-                        Image(systemName: "xmark.circle")
-                        Text("Quit")
+                        Image(systemName: "arrow.clockwise")
+                            .rotationEffect(.degrees(model.isScanning ? 360 : 0))
+                            .animation(model.isScanning ? .linear(duration: 0.6).repeatForever(autoreverses: false) : .default, value: model.isScanning)
+                        Text("Scan processes")
                     }
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
+                .disabled(model.isScanning)
+
                 Spacer()
+
+                Button(action: { model.showStats.toggle() }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: model.showStats ? "list.bullet" : "chart.bar")
+                        Text(model.showStats ? "Sessions" : "Stats")
+                    }
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+
             }
             .padding(12)
         }
@@ -299,6 +436,7 @@ struct PopoverView: View {
 
 struct SessionRow: View {
     let session: SessionInfo
+    var elapsedTime: TimeInterval?
     var onActivate: (() -> Void)?
 
     var body: some View {
@@ -332,6 +470,12 @@ struct SessionRow: View {
 
                         if !session.toolName.isEmpty && session.state == .working {
                             Text("· \(session.toolName)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+
+                        if let elapsed = elapsedTime {
+                            Text("· \(formatDuration(elapsed))")
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(.secondary)
                         }
@@ -470,4 +614,136 @@ struct SessionRow: View {
         }
         return false
     }
+}
+
+// MARK: - Stats View
+
+struct StatsView: View {
+    let todayStats: DailyStats
+    let recentDays: [DailyStats]
+    let topTools: [(name: String, count: Int)]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Today's summary
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Today")
+                        .font(.system(size: 13, weight: .semibold))
+
+                    HStack(spacing: 16) {
+                        StatBadge(label: "Sessions", value: "\(todayStats.sessionsStarted)", color: .blue)
+                        StatBadge(label: "Working", value: formatDuration(todayStats.totalWorkingTime), color: .orange)
+                        StatBadge(label: "Tool Calls", value: "\(todayStats.totalToolCalls)", color: .green)
+                    }
+                }
+
+                if !topTools.isEmpty {
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Top Tools (7 days)")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        let maxCount = topTools.first?.count ?? 1
+                        ForEach(topTools.prefix(8), id: \.name) { tool in
+                            HStack(spacing: 8) {
+                                Text(tool.name)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .frame(width: 70, alignment: .trailing)
+
+                                GeometryReader { geo in
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.orange.opacity(0.7))
+                                        .frame(width: geo.size.width * CGFloat(tool.count) / CGFloat(maxCount))
+                                }
+                                .frame(height: 14)
+
+                                Text("\(tool.count)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 30, alignment: .trailing)
+                            }
+                        }
+                    }
+                }
+
+                if recentDays.count > 1 {
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Last 7 Days")
+                            .font(.system(size: 13, weight: .semibold))
+
+                        let maxTime = recentDays.map(\.totalWorkingTime).max() ?? 1
+
+                        ForEach(recentDays, id: \.date) { day in
+                            HStack(spacing: 8) {
+                                Text(shortDate(day.date))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .frame(width: 50, alignment: .trailing)
+
+                                GeometryReader { geo in
+                                    let workWidth = maxTime > 0 ? geo.size.width * CGFloat(day.totalWorkingTime / maxTime) : 0
+
+                                    if workWidth > 0 {
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(Color.orange.opacity(0.7))
+                                            .frame(width: workWidth)
+                                    }
+                                }
+                                .frame(height: 14)
+
+                                Text(day.totalWorkingTime > 0 ? formatDuration(day.totalWorkingTime) : "-")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 50, alignment: .trailing)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .frame(maxHeight: 350)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func shortDate(_ dateStr: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: dateStr) else { return dateStr }
+        let display = DateFormatter()
+        display.dateFormat = "MMM d"
+        return display.string(from: date)
+    }
+}
+
+struct StatBadge: View {
+    let label: String
+    let value: String
+    let color: Color
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(value)
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .foregroundColor(color)
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Helpers
+
+private func formatDuration(_ seconds: TimeInterval) -> String {
+    let total = Int(seconds)
+    if total < 60 { return "\(total)s" }
+    let h = total / 3600
+    let m = (total % 3600) / 60
+    if h > 0 { return "\(h)h \(m)m" }
+    return "\(m)m"
 }

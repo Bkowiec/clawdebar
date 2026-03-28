@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: swift build -c release
+
+      - name: Create app bundle
+        run: |
+          BIN_PATH="$(swift build -c release --show-bin-path)"
+          APP_BUNDLE="Clawdebar.app"
+
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          mkdir -p "$APP_BUNDLE/Contents/Resources"
+          cp "$BIN_PATH/Clawdebar" "$APP_BUNDLE/Contents/MacOS/Clawdebar"
+          cp StatusBar/Info.plist "$APP_BUNDLE/Contents/"
+
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string com.clawdebar.app" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleName string Clawdebar" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string Clawdebar" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${GITHUB_REF_NAME#v}" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
+
+          swift scripts/generate-icon.swift > /dev/null 2>&1
+          iconutil -c icns Clawdebar.iconset -o "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+          rm -rf Clawdebar.iconset
+
+      - name: Create zip
+        run: ditto -c -k --keepParent Clawdebar.app Clawdebar.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Clawdebar.zip
+          generate_release_notes: true

@@ -1,4 +1,6 @@
-# Clawdebar
+<p align="center">
+  <img src="assets/logo.svg" alt="Clawdebar" width="480"/>
+</p>
 
 A lightweight macOS menu bar app that keeps you in the loop while Claude Code works.
 
@@ -13,6 +15,10 @@ Stop watching your terminal. Glance at the menu bar to see what Claude is doing 
 - **Sleep prevention** — your MacBook stays awake while any session is working
 - **Auto-start on login** — registers itself as a Login Item, survives reboots
 - **Auto-cleanup** — stale sessions are removed automatically
+- **Session statistics** — tracks working time, tool usage, and session history
+- **Per-session timer** — see how long each session has been running
+- **7-day history** — daily breakdown with working time bars
+- **Tool usage chart** — see which tools Claude uses most (Write, Bash, Read, etc.)
 
 ## How it works
 
@@ -24,40 +30,44 @@ Each Claude Code session writes its own status file via [hooks](https://docs.ant
 
 | Priority | Hook Events | Icon |
 |---|---|---|
-| Waiting (highest) | `Notification`, `PermissionRequest` | Clawde yellow, blinking |
+| Waiting (highest) | `PermissionRequest` | Clawde yellow, blinking |
 | Working | `PreToolUse`, `PostToolUse` | Clawde orange, pulsing |
-| Idle | `SessionStart`, `Stop` | Clawde gray (template) |
+| Idle | `SessionStart`, `Stop`, `Notification` | Clawde gray (template) |
 
 When multiple sessions are active, a badge shows the count (e.g. "3").
 
 ## Requirements
 
 - macOS 13.0+ (Ventura or later)
-- Xcode or Xcode Command Line Tools (with macOS SDK)
 - Python 3 (pre-installed on macOS)
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 
 ## Install
 
+### Download (recommended)
+
+1. Download `Clawdebar.zip` from [Releases](../../releases/latest)
+2. Unzip and move `Clawdebar.app` to `~/Applications/` (or `/Applications/`)
+3. Open the app
+
+> **Note:** The app is not code-signed, so macOS Gatekeeper will block the first launch. To allow it, right-click the app → **Open**, or run:
+> ```bash
+> xattr -cr ~/Applications/Clawdebar.app
+> ```
+
+On first launch, Clawdebar automatically:
+- Installs the hook script to `~/.claude/hooks/statusbar/`
+- Registers hooks in `~/.claude/settings.json`
+- Registers as a Login Item (auto-start on boot)
+
+### Build from source
+
 ```bash
 git clone <repo-url>
 cd clawdebar
 ./install.sh
-```
-
-The installer:
-1. Builds the Swift app (release mode)
-2. Creates `~/Applications/Clawdebar.app`
-3. Installs the hook script to `~/.claude/hooks/statusbar/`
-4. Adds hooks to your `~/.claude/settings.json` (preserves existing hooks)
-
-Then open the app:
-
-```bash
 open ~/Applications/Clawdebar.app
 ```
-
-The app auto-registers as a Login Item on first launch.
 
 ## Supported terminals
 
@@ -87,6 +97,7 @@ This removes everything:
 3. Removes the hook script from `~/.claude/hooks/statusbar/`
 4. Cleans up `~/.claude/settings.json` (removes only statusbar hooks, preserves the rest)
 5. Deletes all `/tmp/claude-status-*.json` session files
+6. Removes `~/.clawdebar/` stats directory
 
 ## Project structure
 
@@ -97,8 +108,10 @@ This removes everything:
 ├── hooks/
 │   └── statusbar.sh           # Claude Code hook script
 └── StatusBar/
-    ├── StatusBarApp.swift      # Menu bar app, popover UI, Clawde icon
+    ├── StatusBarApp.swift      # Menu bar app, popover UI, Clawde icon, stats view
     ├── StatusWatcher.swift     # Multi-session file watcher
+    ├── StatsStore.swift        # Session statistics tracking and persistence
+    ├── HookInstaller.swift     # Auto-installs hooks on first launch
     ├── SleepManager.swift      # IOKit sleep prevention
     └── Info.plist              # App config (LSUIElement)
 ```

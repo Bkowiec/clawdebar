@@ -19,7 +19,8 @@ CWD="$CWD"
 
 case "$EVENT" in
   PreToolUse|PostToolUse)                STATUS="working" ;;
-  Notification|PermissionRequest)        STATUS="waiting" ;;
+  Notification)                           STATUS="idle" ;;
+  PermissionRequest)                     STATUS="waiting" ;;
   SessionStart|Stop)                     STATUS="idle" ;;
   SessionEnd)
     # Session terminated — delete the status file immediately
@@ -41,7 +42,7 @@ detect_app() {
         local comm
         comm=$(ps -o comm= -p "$pid" 2>/dev/null)
         case "$comm" in
-            *"Visual Studio Code"*|*Code*|*code-helper*|*Electron*)
+            *"Visual Studio Code"*|*code-helper*|*Electron*)
                 app="VSCode"; break ;;
             *Terminal*)
                 app="Terminal"; break ;;
@@ -84,8 +85,20 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     fi
 done
 
-# Write per-session status file
+# Write per-session status file (JSON-escaped via Python to handle special chars in paths)
 STATUS_FILE="/tmp/claude-status-${SESSION_ID}.json"
-cat > "$STATUS_FILE" <<EOF
-{"status":"$STATUS","event":"$EVENT","timestamp":$TIMESTAMP,"session_id":"$SESSION_ID","tool_name":"$TOOL_NAME","cwd":"$CWD","app":"$APP","tty":"$SESSION_TTY"}
-EOF
+_STATUS="$STATUS" _EVENT="$EVENT" _TS="$TIMESTAMP" _SID="$SESSION_ID" \
+_TOOL="$TOOL_NAME" _CWD="$CWD" _APP="$APP" _TTY="$SESSION_TTY" \
+python3 -c "
+import json, sys, os
+json.dump({
+    'status': os.environ['_STATUS'],
+    'event': os.environ['_EVENT'],
+    'timestamp': int(os.environ['_TS']),
+    'session_id': os.environ['_SID'],
+    'tool_name': os.environ['_TOOL'],
+    'cwd': os.environ['_CWD'],
+    'app': os.environ['_APP'],
+    'tty': os.environ['_TTY']
+}, sys.stdout)
+" > "$STATUS_FILE"
