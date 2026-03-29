@@ -122,24 +122,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func checkForUpdate() {
-        let checking = NSAlert()
-        checking.messageText = "Checking for updates..."
-        checking.informativeText = "Current version: \(Updater.shared.currentVersion)"
-        checking.addButton(withTitle: "Cancel")
-        checking.buttons.first?.isHidden = true
-
-        // Show alert and run check concurrently
         Task {
             let result = await Updater.shared.check()
 
             await MainActor.run {
-                // Close the checking alert if still open
-                let window = checking.window
-                if window.isVisible {
-                    window.close()
-                    NSApp.stopModal(withCode: .cancel)
-                }
-
                 switch result {
                 case .upToDate(let current):
                     let alert = NSAlert()
@@ -168,8 +154,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
-
-        checking.runModal()
     }
 
     private func performUpdate(zipURL: URL) {
@@ -179,15 +163,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         progress.addButton(withTitle: "OK")
         progress.buttons.first?.isHidden = true
 
+        // Show the alert non-modally via beginSheetModal, then run a nested event loop
+        // so that we can break out of it from the async Task.
+        let window = progress.window
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
         Task {
             let error = await Updater.shared.downloadAndInstall(zipURL: zipURL)
 
             await MainActor.run {
-                let window = progress.window
-                if window.isVisible {
-                    window.close()
-                    NSApp.stopModal(withCode: .cancel)
-                }
+                window.orderOut(nil)
 
                 if let error = error {
                     let alert = NSAlert()
@@ -199,8 +186,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // On success, the app will relaunch automatically
             }
         }
-
-        progress.runModal()
     }
 
     @objc private func togglePopover() {
