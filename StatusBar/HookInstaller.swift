@@ -7,8 +7,7 @@ class HookInstaller {
     private let hookCommand = "bash ~/.claude/hooks/statusbar/statusbar.sh"
     private let hookEvents = [
         "SessionStart", "Stop", "SessionEnd",
-        "Notification", "PermissionRequest",
-        "PreToolUse", "PostToolUse"
+        "PermissionRequest", "PreToolUse", "PostToolUse"
     ]
 
     init() {
@@ -123,110 +122,126 @@ class HookInstaller {
 
     // MARK: - Embedded Hook Script
 
-    private static let embeddedHookScript = """
+    private static let embeddedHookScript = #"""
     #!/bin/bash
     # Claude Code Status Bar hook — writes status per session to /tmp/claude-status-{session_id}.json
+    # All logic is in Python for safe JSON handling and atomic writes.
 
-    # Read event JSON from stdin
-    INPUT=$(cat)
+    exec python3 -c '
+    import json, sys, os, time, subprocess, tempfile
 
-    # Parse all fields in one python call
-    eval "$(echo "$INPUT" | python3 -c "
-    import sys, json, shlex
-    d = json.load(sys.stdin)
-    for k in ('hook_event_name', 'session_id', 'tool_name', 'cwd'):
-        print(f'{k.upper()}={shlex.quote(str(d.get(k, \\"\\")))}')
-    " 2>/dev/null)"
+    data = json.load(sys.stdin)
 
-    EVENT="$HOOK_EVENT_NAME"
-    SESSION_ID="$SESSION_ID"
-    TOOL_NAME="$TOOL_NAME"
-    CWD="$CWD"
+    event = data.get("hook_event_name", "")
+    session_id = data.get("session_id", "")
+    tool_name = data.get("tool_name", "")
+    cwd = data.get("cwd", "")
 
-    case "$EVENT" in
-      PreToolUse|PostToolUse)                STATUS="working" ;;
-      Notification)                           STATUS="idle" ;;
-      PermissionRequest)                     STATUS="waiting" ;;
-      SessionStart|Stop)                     STATUS="idle" ;;
-      SessionEnd)
-        # Session terminated — delete the status file immediately
-        rm -f "/tmp/claude-status-${SESSION_ID}.json"
-        exit 0
-        ;;
-      *)                                     exit 0 ;;
-    esac
+    # SessionEnd: remove status file and exit
+    if event == "SessionEnd":
+        try:
+            os.unlink(f"/tmp/claude-status-{session_id}.json")
+        except FileNotFoundError:
+            pass
+        sys.exit(0)
 
-    TIMESTAMP=$(date +%s)
+    # Map events to states
+    status = {
+        "PreToolUse": "working",
+        "PostToolUse": "working",
+        "PermissionRequest": "waiting",
+        "SessionStart": "idle",
+        "Stop": "idle",
+    }.get(event)
 
-    # Detect parent app (Terminal, VSCode, iTerm, Warp, etc.)
-    detect_app() {
-        local pid=$$
-        local app=""
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-            pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-            [ -z "$pid" ] || [ "$pid" = "1" ] && break
-            local comm
-            comm=$(ps -o comm= -p "$pid" 2>/dev/null)
-            case "$comm" in
-                *"Visual Studio Code"*|*code-helper*|*Electron*)
-                    app="VSCode"; break ;;
-                *Terminal*)
-                    app="Terminal"; break ;;
-                *iTerm*|*iTerm2*)
-                    app="iTerm"; break ;;
-                *Warp*)
-                    app="Warp"; break ;;
-                *Alacritty*)
-                    app="Alacritty"; break ;;
-                *kitty*)
-                    app="kitty"; break ;;
-                *WezTerm*|*wezterm*)
-                    app="WezTerm"; break ;;
-            esac
-        done
-        if [ -z "$app" ]; then
-            case "${TERM_PROGRAM:-}" in
-                vscode)     app="VSCode" ;;
-                iTerm.app)  app="iTerm" ;;
-                WarpTerminal) app="Warp" ;;
-                Apple_Terminal) app="Terminal" ;;
-                *)          app="Unknown" ;;
-            esac
-        fi
-        echo "$app"
-    }
+    if not status:
+        sys.exit(0)
 
-    APP=$(detect_app)
+    timestamp = int(time.time())
 
-    # Detect TTY for terminal window matching
-    SESSION_TTY=""
-    pid=$$
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
-        [ -z "$pid" ] || [ "$pid" = "1" ] && break
-        t=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
-        if [ -n "$t" ] && [ "$t" != "??" ]; then
-            SESSION_TTY="/dev/$t"
-            break
-        fi
-    done
+    def detect_app():
+        pid = os.getpid()
+        for _ in range(10):
+            try:
+                out = subprocess.check_output(
+                    ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                    stderr=subprocess.DEVNULL, text=True
+                ).strip()
+            except Exception:
+                break
+            if not out:
+                break
+            parts = out.split(None, 1)
+            if len(parts) < 2:
+                break
+            ppid, comm = int(parts[0]), parts[1]
+            if ppid <= 1:
+                break
+            for pattern, name in [
+                ("Visual Studio Code", "VSCode"), ("code-helper", "VSCode"), ("Electron", "VSCode"),
+                ("Terminal", "Terminal"), ("iTerm", "iTerm"), ("Warp", "Warp"),
+                ("Alacritty", "Alacritty"), ("kitty", "kitty"), ("WezTerm", "WezTerm"), ("wezterm", "WezTerm"),
+            ]:
+                if pattern in comm:
+                    return name
+            pid = ppid
+        tp = os.environ.get("TERM_PROGRAM", "")
+        return {"vscode": "VSCode", "iTerm.app": "iTerm", "WarpTerminal": "Warp", "Apple_Terminal": "Terminal"}.get(tp, "Unknown")
 
-    # Write per-session status file (JSON-escaped via Python to handle special chars in paths)
-    STATUS_FILE="/tmp/claude-status-${SESSION_ID}.json"
-    _STATUS="$STATUS" _EVENT="$EVENT" _TS="$TIMESTAMP" _SID="$SESSION_ID" \\
-    _TOOL="$TOOL_NAME" _CWD="$CWD" _APP="$APP" _TTY="$SESSION_TTY" \\
-    python3 -c "
-    import json, sys, os
-    json.dump({
-        'status': os.environ['_STATUS'],
-        'event': os.environ['_EVENT'],
-        'timestamp': int(os.environ['_TS']),
-        'session_id': os.environ['_SID'],
-        'tool_name': os.environ['_TOOL'],
-        'cwd': os.environ['_CWD'],
-        'app': os.environ['_APP'],
-        'tty': os.environ['_TTY']
-    }, sys.stdout)
-    " > "$STATUS_FILE"
-    """
+    def detect_tty():
+        pid = os.getpid()
+        for _ in range(10):
+            try:
+                out = subprocess.check_output(
+                    ["ps", "-o", "ppid=,tty=", "-p", str(pid)],
+                    stderr=subprocess.DEVNULL, text=True
+                ).strip()
+            except Exception:
+                break
+            if not out:
+                break
+            parts = out.split()
+            if len(parts) < 2:
+                break
+            try:
+                ppid = int(parts[0])
+            except ValueError:
+                break
+            tty = parts[1]
+            if ppid <= 1:
+                break
+            if tty and tty != "??":
+                return f"/dev/{tty}"
+            pid = ppid
+        return ""
+
+    payload = json.dumps({
+        "status": status,
+        "event": event,
+        "timestamp": timestamp,
+        "session_id": session_id,
+        "tool_name": tool_name,
+        "cwd": cwd,
+        "app": detect_app(),
+        "tty": detect_tty(),
+    })
+
+    # Atomic write: temp file + rename
+    status_file = f"/tmp/claude-status-{session_id}.json"
+    fd, tmp_path = tempfile.mkstemp(dir="/tmp", prefix=".claude-status-", suffix=".tmp")
+    try:
+        os.write(fd, payload.encode())
+        os.close(fd)
+        os.rename(tmp_path, status_file)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    '
+    """#
 }

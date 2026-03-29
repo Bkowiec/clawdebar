@@ -29,6 +29,12 @@ cp "$SCRIPT_DIR/StatusBar/Info.plist" "$APP_BUNDLE/Contents/"
 /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string Clawdebar" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true
 
+# Set version from git tag (fallback to "dev" for local builds)
+VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
+VERSION=${VERSION#v}
+/usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || \
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP_BUNDLE/Contents/Info.plist"
+
 # Generate app icon
 echo "Generating app icon..."
 swift "$SCRIPT_DIR/scripts/generate-icon.swift" > /dev/null 2>&1
@@ -58,7 +64,7 @@ hook_cmd = "bash ~/.claude/hooks/statusbar/statusbar.sh"
 hook_entry = {"type": "command", "command": hook_cmd}
 
 # Events the statusbar hook needs
-events = ["SessionStart", "Stop", "SessionEnd", "Notification", "PermissionRequest", "PreToolUse", "PostToolUse"]
+events = ["SessionStart", "Stop", "SessionEnd", "PermissionRequest", "PreToolUse", "PostToolUse"]
 
 for event in events:
     matchers = hooks.setdefault(event, [])

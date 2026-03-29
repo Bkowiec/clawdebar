@@ -32,7 +32,7 @@ Each Claude Code session writes its own status file via [hooks](https://docs.ant
 |---|---|---|
 | Waiting (highest) | `PermissionRequest` | Clawde yellow, blinking |
 | Working | `PreToolUse`, `PostToolUse` | Clawde orange, pulsing |
-| Idle | `SessionStart`, `Stop`, `Notification` | Clawde gray (template) |
+| Idle | `SessionStart`, `Stop` | Clawde gray (template) |
 
 When multiple sessions are active, a badge shows the count (e.g. "3").
 

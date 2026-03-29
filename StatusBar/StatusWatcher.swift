@@ -51,6 +51,12 @@ private struct StatusFileContent: Codable {
     let tty: String?
 }
 
+/// Resolve symlinks for path comparison (e.g. /tmp → /private/tmp)
+private func normalizePath(_ path: String) -> String {
+    guard !path.isEmpty else { return path }
+    return (path as NSString).resolvingSymlinksInPath
+}
+
 class StatusWatcher {
     private let statusDir = "/tmp"
     private let filePrefix = "claude-status-"
@@ -140,7 +146,7 @@ class StatusWatcher {
         var existingTtys = Set<String>()
         DispatchQueue.main.sync {
             existingSessionIds = Set(sessions.map(\.id))
-            existingCwds = Set(sessions.filter { !$0.workingDirectory.isEmpty }.map(\.workingDirectory))
+            existingCwds = Set(sessions.filter { !$0.workingDirectory.isEmpty }.map { normalizePath($0.workingDirectory) })
             existingTtys = Set(sessions.filter { !$0.tty.isEmpty }.map(\.tty))
         }
 
@@ -167,16 +173,23 @@ class StatusWatcher {
             let cwd = getCwd(of: pid)
 
             // Skip if we already have a session for this directory
-            if !cwd.isEmpty && existingCwds.contains(cwd) { continue }
+            if !cwd.isEmpty && existingCwds.contains(normalizePath(cwd)) { continue }
 
             // Detect parent terminal app by walking up the process tree
             let app = detectParentApp(pid: pid)
 
             let statusFile = "/tmp/\(filePrefix)\(sessionId).json"
-            let json = """
-            {"status":"idle","event":"Discovered","timestamp":\(Int(now)),"session_id":"\(sessionId)","tool_name":"","cwd":"\(cwd)","app":"\(app)","tty":"\(tty)"}
-            """
-            fm.createFile(atPath: statusFile, contents: json.data(using: .utf8))
+            let payload: [String: Any] = [
+                "status": "idle", "event": "Discovered", "timestamp": Int(now),
+                "session_id": sessionId, "tool_name": "", "cwd": cwd, "app": app, "tty": tty
+            ]
+            if let jsonData = try? JSONSerialization.data(withJSONObject: payload) {
+                // Atomic write via temp file + rename
+                let tmpPath = "/tmp/.claude-status-\(sessionId).tmp"
+                if fm.createFile(atPath: tmpPath, contents: jsonData) {
+                    try? fm.moveItem(atPath: tmpPath, toPath: statusFile)
+                }
+            }
 
             if !tty.isEmpty { createdTtys.insert(tty) }
         }
@@ -185,6 +198,23 @@ class StatusWatcher {
         DispatchQueue.main.sync {
             scanAllSessions()
         }
+    }
+
+    /// Check if a process is alive and not a zombie.
+    private func isProcessAlive(_ pid: Int32) -> Bool {
+        guard kill(pid, 0) == 0 else { return false }
+        // Check process state via ps to detect zombies
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "state=", "-p", "\(pid)"]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        ps.standardError = FileHandle.nullDevice
+        try? ps.run()
+        ps.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let state = (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return !state.hasPrefix("Z")
     }
 
     private func getParentPid(of pid: Int) -> Int {
@@ -287,10 +317,19 @@ class StatusWatcher {
                 continue
             }
 
-            // Skip stale sessions — working/waiting get a longer grace period
+            // Skip stale sessions
             if now - content.timestamp > orphanedTimeout {
                 try? fm.removeItem(atPath: path)
                 continue
+            }
+
+            // For process-discovered sessions, verify the process is still alive and not a zombie
+            if content.session_id.hasPrefix("pid-"),
+               let pid = Int(content.session_id.dropFirst(4)) {
+                if !isProcessAlive(Int32(pid)) {
+                    try? fm.removeItem(atPath: path)
+                    continue
+                }
             }
 
             let session = SessionInfo(
@@ -338,17 +377,18 @@ class StatusWatcher {
                 }
             }
 
-            if !s.workingDirectory.isEmpty {
-                if let existing = cwdOwners[s.workingDirectory] {
+            let normalizedCwd = normalizePath(s.workingDirectory)
+            if !normalizedCwd.isEmpty {
+                if let existing = cwdOwners[normalizedCwd] {
                     let existingIsSynthetic = newSessions[existing].id.hasPrefix("pid-")
                     if isSynthetic && !existingIsSynthetic {
                         indicesToRemove.insert(i)
                     } else if !isSynthetic && existingIsSynthetic {
                         indicesToRemove.insert(existing)
-                        cwdOwners[s.workingDirectory] = i
+                        cwdOwners[normalizedCwd] = i
                     }
                 } else {
-                    cwdOwners[s.workingDirectory] = i
+                    cwdOwners[normalizedCwd] = i
                 }
             }
         }

@@ -32,6 +32,7 @@ class StatsStore {
     private let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
+        f.calendar = Calendar(identifier: .gregorian)
         return f
     }()
     private var data: StatsData
@@ -46,6 +47,10 @@ class StatsStore {
         data = StatsData()
         load()
         startAutoSave()
+    }
+
+    deinit {
+        saveTimer?.invalidate()
     }
 
     // MARK: - Recording
@@ -135,7 +140,7 @@ class StatsStore {
                     combined[tool, default: 0] += count
                 }
             }
-            return combined.sorted { $0.value > $1.value }.map { (name: $0.key, count: $0.value) }
+            return combined.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map { (name: $0.key, count: $0.value) }
         }
     }
 
@@ -153,16 +158,28 @@ class StatsStore {
         let elapsed = date.timeIntervalSince(live.lastStateChange)
         accumulateTime(&live, elapsed: elapsed)
 
-        var daily = todayEntry()
+        _flushSessionToDaily(&live, at: date)
+        dirty = true
+        _save()
+    }
+
+    /// Flush accumulated time/tools from a live session into the appropriate daily entry.
+    /// Uses the given date to determine which day receives the stats.
+    private func _flushSessionToDaily(_ live: inout SessionStats, at date: Date) {
+        let key = dateFormatter.string(from: date)
+        var daily = data.dailyStats[key] ?? DailyStats(date: key)
         daily.totalWorkingTime += live.workingTime
         daily.totalIdleTime += live.idleTime
         daily.totalToolCalls += live.totalToolCalls
         for (tool, count) in live.toolUsage {
             daily.toolUsage[tool, default: 0] += count
         }
-        data.dailyStats[daily.date] = daily
-        dirty = true
-        _save()
+        data.dailyStats[key] = daily
+
+        live.workingTime = 0
+        live.idleTime = 0
+        live.totalToolCalls = 0
+        live.toolUsage = [:]
     }
 
     private func _todayStats() -> DailyStats {
@@ -235,28 +252,33 @@ class StatsStore {
 
     private func flushLiveSessionsToDailyStats() {
         let now = Date()
-        var daily = todayEntry()
+        let calendar = Calendar.current
 
         for (id, var live) in liveSessions {
-            let elapsed = now.timeIntervalSince(live.lastStateChange)
-            accumulateTime(&live, elapsed: elapsed)
-            live.lastStateChange = now
-
-            daily.totalWorkingTime += live.workingTime
-            daily.totalIdleTime += live.idleTime
-            daily.totalToolCalls += live.totalToolCalls
-            for (tool, count) in live.toolUsage {
-                daily.toolUsage[tool, default: 0] += count
+            // Split time across day boundaries if session spans midnight
+            var cursor = live.lastStateChange
+            while true {
+                let nextMidnight = calendar.nextDate(after: cursor, matching: DateComponents(hour: 0, minute: 0, second: 0), matchingPolicy: .nextTime) ?? now
+                if nextMidnight < now {
+                    // Accumulate time up to midnight into that day
+                    let elapsed = nextMidnight.timeIntervalSince(cursor)
+                    accumulateTime(&live, elapsed: elapsed)
+                    _flushSessionToDaily(&live, at: cursor)
+                    cursor = nextMidnight
+                    live.lastStateChange = cursor
+                } else {
+                    // Remaining time belongs to current day
+                    let elapsed = now.timeIntervalSince(cursor)
+                    accumulateTime(&live, elapsed: elapsed)
+                    _flushSessionToDaily(&live, at: now)
+                    live.lastStateChange = now
+                    break
+                }
             }
 
-            live.workingTime = 0
-            live.idleTime = 0
-            live.totalToolCalls = 0
-            live.toolUsage = [:]
             liveSessions[id] = live
         }
 
-        data.dailyStats[daily.date] = daily
         dirty = true
     }
 

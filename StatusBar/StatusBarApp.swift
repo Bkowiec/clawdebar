@@ -84,6 +84,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let event = NSApp.currentEvent else { return }
         if event.type == .rightMouseUp {
             let menu = NSMenu()
+            menu.addItem(NSMenuItem(title: "Check for Update...", action: #selector(checkForUpdate), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Uninstall Clawdebar...", action: #selector(uninstallApp), keyEquivalent: ""))
             menu.addItem(NSMenuItem.separator())
             menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
@@ -119,25 +121,100 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.terminate(nil)
     }
 
-    @objc private func togglePopover() {
-        if popover.isShown, popover.contentViewController?.view.window?.isOnActiveSpace == true {
-            closePopover()
-        } else {
-            if popover.isShown { closePopover() }
+    @objc private func checkForUpdate() {
+        let checking = NSAlert()
+        checking.messageText = "Checking for updates..."
+        checking.informativeText = "Current version: \(Updater.shared.currentVersion)"
+        checking.addButton(withTitle: "Cancel")
+        checking.buttons.first?.isHidden = true
 
-            if let button = statusItem.button {
-                popoverModel.showStats = false
-                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                popover.contentViewController?.view.window?.makeKey()
-                NSApp.activate(ignoringOtherApps: true)
+        // Show alert and run check concurrently
+        Task {
+            let result = await Updater.shared.check()
 
-                clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
-                    guard let self = self else { return }
-                    if let popoverWindow = self.popover.contentViewController?.view.window,
-                       let eventWindow = event.window,
-                       popoverWindow == eventWindow { return }
-                    self.closePopover()
+            await MainActor.run {
+                // Close the checking alert if still open
+                let window = checking.window
+                if window.isVisible {
+                    window.close()
+                    NSApp.stopModal(withCode: .cancel)
                 }
+
+                switch result {
+                case .upToDate(let current):
+                    let alert = NSAlert()
+                    alert.messageText = "You're up to date!"
+                    alert.informativeText = "Clawdebar \(current) is the latest version."
+                    alert.alertStyle = .informational
+                    alert.runModal()
+
+                case .available(let current, let latest, let zipURL):
+                    let alert = NSAlert()
+                    alert.messageText = "Update available"
+                    alert.informativeText = "Current: \(current)\nLatest: \(latest)\n\nWould you like to update now?"
+                    alert.addButton(withTitle: "Update Now")
+                    alert.addButton(withTitle: "Later")
+
+                    guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+                    self.performUpdate(zipURL: zipURL)
+
+                case .error(let message):
+                    let alert = NSAlert()
+                    alert.messageText = "Update check failed"
+                    alert.informativeText = message
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                }
+            }
+        }
+
+        checking.runModal()
+    }
+
+    private func performUpdate(zipURL: URL) {
+        let progress = NSAlert()
+        progress.messageText = "Downloading update..."
+        progress.informativeText = "Please wait while the update is downloaded and installed."
+        progress.addButton(withTitle: "OK")
+        progress.buttons.first?.isHidden = true
+
+        Task {
+            let error = await Updater.shared.downloadAndInstall(zipURL: zipURL)
+
+            await MainActor.run {
+                let window = progress.window
+                if window.isVisible {
+                    window.close()
+                    NSApp.stopModal(withCode: .cancel)
+                }
+
+                if let error = error {
+                    let alert = NSAlert()
+                    alert.messageText = "Update failed"
+                    alert.informativeText = error
+                    alert.alertStyle = .critical
+                    alert.runModal()
+                }
+                // On success, the app will relaunch automatically
+            }
+        }
+
+        progress.runModal()
+    }
+
+    @objc private func togglePopover() {
+        if popover.isShown {
+            closePopover()
+        } else if let button = statusItem.button {
+            popoverModel.showStats = false
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+            NSApp.activate(ignoringOtherApps: true)
+
+            clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] event in
+                guard let self = self, self.popover.isShown else { return }
+                self.closePopover()
             }
         }
     }
