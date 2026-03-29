@@ -16,8 +16,8 @@ struct StatusBarApp: App {
     init() {
         // Prevent the Settings window from appearing on launch
         DispatchQueue.main.async {
-            for window in NSApplication.shared.windows {
-                window.close()
+            for window in NSApplication.shared.windows where window.title.contains("Settings") {
+                window.orderOut(nil)
             }
         }
     }
