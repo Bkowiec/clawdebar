@@ -7,7 +7,19 @@ struct StatusBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        Settings {}
+        Settings {
+            EmptyView()
+        }
+        .defaultSize(width: 0, height: 0)
+    }
+
+    init() {
+        // Prevent the Settings window from appearing on launch
+        DispatchQueue.main.async {
+            for window in NSApplication.shared.windows {
+                window.close()
+            }
+        }
     }
 }
 
@@ -157,25 +169,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performUpdate(zipURL: URL) {
-        let progress = NSAlert()
-        progress.messageText = "Downloading update..."
-        progress.informativeText = "Please wait while the update is downloaded and installed."
-        progress.addButton(withTitle: "OK")
-        progress.buttons.first?.isHidden = true
-
-        // Show the alert non-modally via beginSheetModal, then run a nested event loop
-        // so that we can break out of it from the async Task.
-        let window = progress.window
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-
         Task {
             let error = await Updater.shared.downloadAndInstall(zipURL: zipURL)
 
             await MainActor.run {
-                window.orderOut(nil)
-
                 if let error = error {
                     let alert = NSAlert()
                     alert.messageText = "Update failed"
